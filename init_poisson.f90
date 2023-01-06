@@ -2,20 +2,20 @@ subroutine init_poisson
   use pm_commons
   use amr_commons
   use poisson_commons
+  use mpi_mod
   use mond_commons
   implicit none
 #ifndef WITHOUTMPI
-  include 'mpif.h'
+  integer :: info,info2,dummy_io
+  integer,parameter::tag=1114
 #endif
   integer::ncell,ncache,iskip,igrid,i,ilevel,ind,ivar
-  integer::nvar2,ilevel2,numbl2,ilun,ibound,istart,info
+  integer::ilevel2,numbl2,ilun,ibound,istart
   integer::ncpu2,ndim2,nlevelmax2,nboundary2
   integer ,dimension(:),allocatable::ind_grid
   real(dp),dimension(:),allocatable::xx
   character(LEN=80)::fileloc
   character(LEN=5)::nchar,ncharcpu
-  integer,parameter::tag=1114
-  integer::dummy_io,info2
 
   if(verbose)write(*,*)'Entering init_poisson'
   !RAyMOND
@@ -32,13 +32,13 @@ subroutine init_poisson
   allocate(mondian_phi(1:ncell))
   allocate(rho_pdm(1:ncell))
   allocate(f   (1:ncell,1:3))
-  rho=0.0D0; phi=0.0D0; f=0.0D0
-  newtonian_phi=0.0D0
-  mondian_phi=0.0D0
-  rho_pdm=0.0D0
+  rho=0; phi=0; f=0
+  newtonian_phi=0
+  mondian_phi=0
+  rho_pdm=0
   if(cic_levelmax>0)then
      allocate(rho_top(1:ncell))
-     rho_top=0d0
+     rho_top=0
   endif
 
   !------------------------------------------------------
@@ -64,7 +64,7 @@ subroutine init_poisson
   if(nrestart>0)then
      ilun=ncpu+myid+10
      call title(nrestart,nchar)
-     if(IOGROUPSIZEREP>0)then 
+     if(IOGROUPSIZEREP>0)then
         call title(((myid-1)/IOGROUPSIZEREP)+1,ncharcpu)
         fileloc='output_'//TRIM(nchar)//'/group_'//TRIM(ncharcpu)//'/grav_'//TRIM(nchar)//'.out'
      else

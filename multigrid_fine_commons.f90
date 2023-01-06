@@ -27,23 +27,23 @@ subroutine multigrid_fine(ilevel,icount)
    use amr_commons
    use poisson_commons
    use poisson_parameters
-
+   use mpi_mod
    implicit none
-#ifndef WITHOUTMPI
-   include "mpif.h"
-#endif
 
    integer, intent(in) :: ilevel,icount
 
    integer, parameter  :: MAXITER  = 10
-   real(dp), parameter :: SAFE_FACTOR = 0.5
+   real(dp), parameter :: SAFE_FACTOR = 0.5d0
 
-   integer  :: ifine, i, iter, info, icpu
-   real(kind=8) :: res_norm2, i_res_norm2, i_res_norm2_tot, res_norm2_tot
-   real(kind=8) :: debug_norm2, debug_norm2_tot
+   integer :: ifine, i, iter, icpu
+   logical :: allmasked
    real(kind=8) :: err, last_err
-
-   logical :: allmasked, allmasked_tot
+   real(kind=8) :: res_norm2, i_res_norm2
+#ifndef WITHOUTMPI
+   logical :: allmasked_tot
+   real(kind=8) :: res_norm2_tot, i_res_norm2_tot
+   integer :: info
+#endif
 
    if(gravity_type>0)return
    if(numbtot(1,ilevel)==0)return
@@ -94,7 +94,7 @@ subroutine multigrid_fine(ilevel,icount)
       ! Convert volume fraction to mask value
       do icpu=1,ncpu
          if(active_mg(icpu,ilevel-1)%ngrid==0) cycle
-         active_mg(icpu,ilevel-1)%u(:,4)=2d0*active_mg(icpu,ilevel-1)%u(:,4)-1d0
+         active_mg(icpu,ilevel-1)%u(:,4)=2*active_mg(icpu,ilevel-1)%u(:,4)-1d0
       end do
 
       ! Check active mask state
@@ -128,7 +128,7 @@ subroutine multigrid_fine(ilevel,icount)
          ! Convert volume fraction to mask value
          do icpu=1,ncpu
             if(active_mg(icpu,ifine-1)%ngrid==0) cycle
-            active_mg(icpu,ifine-1)%u(:,4)=2d0*active_mg(icpu,ifine-1)%u(:,4)-1d0
+            active_mg(icpu,ifine-1)%u(:,4)=2*active_mg(icpu,ifine-1)%u(:,4)-1d0
          end do
 
          ! Check active mask state
@@ -275,16 +275,13 @@ end subroutine multigrid_fine
 recursive subroutine recursive_multigrid_coarse(ifinelevel, safe)
    use amr_commons
    use poisson_commons
+   use mpi_mod
    implicit none
-#ifndef WITHOUTMPI
-   include "mpif.h"
-#endif
 
    integer, intent(in) :: ifinelevel
    logical, intent(in) :: safe
 
-   real(dp) :: debug_norm2, debug_norm2_tot
-   integer :: i, icpu, info, icycle, ncycle
+   integer :: i, icpu, icycle, ncycle
 
    if(ifinelevel<=levelmin_mg) then
       ! Solve 'directly' :
@@ -363,41 +360,43 @@ end subroutine recursive_multigrid_coarse
 subroutine build_parent_comms_mg(active_f_comm, ifinelevel)
    use amr_commons
    use poisson_commons
+   use mpi_mod
    implicit none
 
 #ifndef WITHOUTMPI
-   include "mpif.h"
    integer, dimension (MPI_STATUS_SIZE, ncpu) :: statuses
 #endif
-
-   integer, intent(in) :: ifinelevel
    type(communicator), intent(in) :: active_f_comm
 
-   integer :: icoarselevel
-   integer :: ngrids, cur_grid, cur_cpu, cur_cell, newgrids
-   integer :: i, nbatch, ind, icpu, istart, info
+   integer, intent(in) :: ifinelevel
 
-   integer :: nact_tot, nreq_tot, nreq_tot2
-   integer, dimension(1:ncpu) :: nreq, nreq2
+   integer :: icoarselevel
+   integer :: ngrids, cur_grid, cur_cpu, cur_cell
+   integer :: i, nbatch, ind, istart
 
    integer, dimension(1:nvector), save :: ind_cell_father
    integer, dimension(1:nvector,1:twotondim),   save :: nbors_father_grids
    integer, dimension(1:nvector,1:threetondim), save :: nbors_father_cells
+   integer, dimension(1:ncpu) :: indx
+   integer, dimension(1:ncpu) :: nreq, nreq2
+   integer :: nact_tot, nreq_tot, nreq_tot2
 
+#ifndef WITHOUTMPI
    type(communicator), dimension(1:ncpu) :: comm_send, comm_receive
    type(communicator), dimension(1:ncpu) :: comm_send2, comm_receive2
-
-   integer, dimension(1:ncpu) :: indx, recvbuf, recvbuf2
+   integer :: icpu, newgrids
+   integer, dimension(1:ncpu) :: recvbuf, recvbuf2
    integer, dimension(1:ncpu) :: reqsend, reqrecv
    integer :: countrecv, countsend
-   integer :: tag = 777
+   integer :: tag = 777, info
+   recvbuf  = 0
+#endif
 
 
    icoarselevel=ifinelevel-1
 
-   nact_tot=0
-   nreq_tot=0; nreq=0
-   indx=0; recvbuf=0
+   nreq=0; nreq_tot=0; nact_tot=0
+   indx=0
 
    ! ---------------------------------------------------------------------
    ! STAGE 1 : Coarse grid MG activation for local grids (1st pass)
@@ -720,7 +719,7 @@ subroutine build_parent_comms_mg(active_f_comm, ifinelevel)
          active_mg(icpu,icoarselevel)%f=0
       end if
    end do
-   
+
    nreq=0
    do i=1,nreq_tot
       cur_grid=flag2(ngridmax+i)
@@ -904,7 +903,7 @@ subroutine make_fine_bc_rhs(ilevel,icount)
    use amr_commons
    use pm_commons
    use poisson_commons
-   use mond_commons, only: rho_pdm, qumond_pot
+   use constants, only: twopi
    implicit none
    integer, intent(in) :: ilevel,icount
 
@@ -928,7 +927,7 @@ subroutine make_fine_bc_rhs(ilevel,icount)
    ! Set constants
    nx_loc = icoarse_max-icoarse_min+1
    scale  = boxlen/dble(nx_loc)
-   fourpi = 4.D0*ACOS(-1.0D0)*scale
+   fourpi = 2*twopi*scale
    if(cosmo) fourpi = 1.5D0*omega_m*aexp*scale
 
    dx  = 0.5d0**ilevel
@@ -962,7 +961,7 @@ subroutine make_fine_bc_rhs(ilevel,icount)
 
          if(f(icell_amr,3)<=0.0) cycle ! Do not process masked cells
 
-         ! Separate directions 
+         ! Separate directions
          do idim=1,ndim
             ! Loop over the 2 neighbors
             do inbor=1,2
@@ -1021,19 +1020,17 @@ end subroutine make_fine_bc_rhs
 subroutine make_virtual_mg_dp(ivar,ilevel)
   use amr_commons
   use poisson_commons
+  use mpi_mod
 
   implicit none
+  integer::ilevel,ivar
 #ifndef WITHOUTMPI
-  include 'mpif.h'
   integer,dimension(MPI_STATUS_SIZE,ncpu)::statuses
-#endif
-  integer::ilevel,ivar,icell
-  integer::icpu,i,j,ncache,iskip,step
+  integer::icell,icpu,i,j,ncache,iskip,step
   integer::countsend,countrecv
   integer::info,tag=101
   integer,dimension(ncpu)::reqsend,reqrecv
 
-#ifndef WITHOUTMPI
   ! Receive all messages
   countrecv=0
   do icpu=1,ncpu
@@ -1079,8 +1076,6 @@ subroutine make_virtual_mg_dp(ivar,ilevel)
 
 #endif
 
-111 format('   Entering make_virtual_mg for level ',I2)
-
 end subroutine make_virtual_mg_dp
 
 ! ########################################################################
@@ -1089,18 +1084,17 @@ end subroutine make_virtual_mg_dp
 subroutine make_virtual_mg_int(ilevel)
   use amr_commons
   use poisson_commons
+  use mpi_mod
   implicit none
-#ifndef WITHOUTMPI
-  include 'mpif.h'
-  integer,dimension(MPI_STATUS_SIZE,ncpu)::statuses
-#endif
   integer::ilevel
+
+#ifndef WITHOUTMPI
+  integer,dimension(MPI_STATUS_SIZE,ncpu)::statuses
   integer::icpu,i,j,ncache,iskip,step,icell
   integer::countsend,countrecv
   integer::info,tag=101
   integer,dimension(ncpu)::reqsend,reqrecv
 
-#ifndef WITHOUTMPI
   ! Receive all messages
   countrecv=0
   do icpu=1,ncpu
@@ -1146,8 +1140,6 @@ subroutine make_virtual_mg_int(ilevel)
 
 #endif
 
-111 format('   Entering make_virtual_mg for level ',I2)
-
 end subroutine make_virtual_mg_int
 
 ! ########################################################################
@@ -1156,18 +1148,17 @@ end subroutine make_virtual_mg_int
 subroutine make_reverse_mg_dp(ivar,ilevel)
   use amr_commons
   use poisson_commons
+  use mpi_mod
   implicit none
+  integer::ilevel,ivar
+
 #ifndef WITHOUTMPI
-  include 'mpif.h'
   integer,dimension(MPI_STATUS_SIZE,ncpu)::statuses
-#endif
-  integer::ilevel,ivar,icell
-  integer::icpu,i,j,ncache,iskip,step
+  integer::icell,icpu,i,j,ncache,iskip,step
   integer::countsend,countrecv
   integer::info,tag=101
   integer,dimension(ncpu)::reqsend,reqrecv
 
-#ifndef WITHOUTMPI
   ! Receive all messages
   countrecv=0
   do icpu=1,ncpu
@@ -1214,8 +1205,6 @@ subroutine make_reverse_mg_dp(ivar,ilevel)
 
 #endif
 
-111 format('   Entering make_reverse_mg for level ',I2)
-
 end subroutine make_reverse_mg_dp
 
 ! ########################################################################
@@ -1224,18 +1213,18 @@ end subroutine make_reverse_mg_dp
 subroutine make_reverse_mg_int(ilevel)
   use amr_commons
   use poisson_commons
+  use mpi_mod
   implicit none
+  integer::ilevel
+
 #ifndef WITHOUTMPI
-  include 'mpif.h'
   integer,dimension(MPI_STATUS_SIZE,ncpu)::statuses
-#endif
-  integer::ilevel,icell
+  integer::icell
   integer::icpu,i,j,ncache,iskip,step
   integer::countsend,countrecv
   integer::info,tag=101
   integer,dimension(ncpu)::reqsend,reqrecv
 
-#ifndef WITHOUTMPI
   ! Receive all messages
   countrecv=0
   do icpu=1,ncpu
@@ -1282,8 +1271,6 @@ subroutine make_reverse_mg_int(ilevel)
 
 #endif
 
-111 format('   Entering make_reverse_mg for level ',I2)
-
 end subroutine make_reverse_mg_int
 
 
@@ -1295,10 +1282,9 @@ end subroutine make_reverse_mg_int
 subroutine dump_mg_levels(ilevel,idout)
    use amr_commons
    use poisson_commons
+   use mpi_mod
    implicit none
-#ifndef WITHOUTMPI
-   include 'mpif.h'  
-#endif
+
    integer, intent(in) :: idout, ilevel
 
    character(len=24)  :: cfile
@@ -1306,14 +1292,16 @@ subroutine dump_mg_levels(ilevel,idout)
    character(len=5)   :: cout='00000'
 
    integer :: i, ngrids, igrid, icpu, idim
-   
+
+#ifndef WITHOUTMPI
    integer,parameter::tag=1119
    integer::dummy_io,info2
+#endif
 
    write(ccpu,'(I5.5)') myid
    write(cout,'(I5.5)') idout
    cfile='multigrid_'//cout//'.out'//ccpu
-   
+
    ! Wait for the token
 #ifndef WITHOUTMPI
    if(IOGROUPSIZE>0) then
@@ -1323,7 +1311,7 @@ subroutine dump_mg_levels(ilevel,idout)
       end if
    endif
 #endif
-   
+
    open(unit=10,file=cfile,status='unknown',form='formatted')
 
    write(10,'(I1)') ndim

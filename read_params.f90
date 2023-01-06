@@ -4,14 +4,12 @@ subroutine read_params
   use poisson_parameters
   use hydro_parameters
   use mond_commons
+  use mpi_mod
   implicit none
-#ifndef WITHOUTMPI
-  include 'mpif.h'
-#endif
   !--------------------------------------------------
   ! Local variables
   !--------------------------------------------------
-  integer::i,narg,iargc,ierr,levelmax
+  integer::i,narg,levelmax
   character(LEN=80)::infile, info_file
   character(LEN=80)::cmdarg
   character(LEN=5)::nchar
@@ -21,24 +19,26 @@ subroutine read_params
   real(kind=8)::delta_aout=0,aend=0
   logical::nml_ok, info_ok
   integer,parameter::tag=1134
-  integer::dummy_io,info2
+#ifndef WITHOUTMPI
+  integer::dummy_io,ierr,info2
+#endif
+
   !--------------------------------------------------
   ! Namelist definitions
   !--------------------------------------------------
   namelist/run_params/clumpfind,cosmo,pic,sink,lightcone,poisson,hydro,rt,verbose,debug &
        & ,nrestart,ncontrol,nstepmax,nsubcycle,nremap,ordering &
-       & ,bisec_tol,static,geom,overload,cost_weighting,aton,nrestart_quad,restart_remap &
-       !& ,static_dm,static_gas,static_stars,convert_birth_times,use_proper_time,remap_pscalar
-       & ,static_dm,static_gas,static_stars,convert_birth_times,use_proper_time
-  namelist/output_params/noutput,foutput,fbackup,aout,tout,output_mode &
-       & ,tend,delta_tout,aend,delta_aout,gadget_output
+       & ,bisec_tol,static,overload,cost_weighting,aton,nrestart_quad,restart_remap &
+       & ,static_dm,static_gas,static_stars,convert_birth_times,use_proper_time,remap_pscalar
+  namelist/output_params/noutput,foutput,aout,tout &
+       & ,tend,delta_tout,aend,delta_aout,gadget_output,walltime_hrs,minutes_dump
   namelist/amr_params/levelmin,levelmax,ngridmax,ngridtot &
        & ,npartmax,nparttot,nexpand,boxlen,nlevel_collapse
   namelist/poisson_params/epsilon,gravity_type,gravity_params &
        & ,cg_levelmin,cic_levelmax
   namelist/lightcone_params/thetay_cone,thetaz_cone,zmax_cone
   namelist/movie_params/levelmax_frame,nw_frame,nh_frame,ivar_frame &
-       & ,xcentre_frame,ycentre_frame,zcentre_frame,movie_vars &
+       & ,xcentre_frame,ycentre_frame,zcentre_frame &
        & ,deltax_frame,deltay_frame,deltaz_frame,movie,zoom_only_frame &
        & ,imovout,imov,tstartmov,astartmov,tendmov,aendmov,proj_axis,movie_vars_txt &
        & ,theta_camera,phi_camera,dtheta_camera,dphi_camera,focal_camera,dist_camera,ddist_camera &
@@ -94,7 +94,7 @@ subroutine read_params
      call clean_stop
   endif
 #endif
-  
+
   !Write I/O group size information
   if(IOGROUPSIZE>0.or.IOGROUPSIZECONE>0.or.IOGROUPSIZEREP>0)write(*,*)' '
   if(IOGROUPSIZE>0) write(*,*)'IOGROUPSIZE=',IOGROUPSIZE
@@ -106,7 +106,7 @@ subroutine read_params
   call write_gitinfo
 
   ! Read namelist filename from command line argument
-  narg = iargc()
+  narg = command_argument_count()
   IF(narg .LT. 1)THEN
      write(*,*)'You should type: ramses3d input.nml [nrestart]'
      write(*,*)'File input.nml should contain a parameter namelist'
@@ -123,7 +123,7 @@ subroutine read_params
   ! Read the namelist
   !-------------------------------------------------
 
-  ! Wait for the token                                                                                                                                                                                
+  ! Wait for the token
 #ifndef WITHOUTMPI
      if(IOGROUPSIZE>0) then
         if (mod(myid-1,IOGROUPSIZE)/=0) then
@@ -146,10 +146,12 @@ subroutine read_params
   !-------------------------------------------------
   ! Default passive scalar map
   !-------------------------------------------------
-  !allocate(remap_pscalar(1:nvar-(ndim+2)))
-  !do i=1,nvar-(ndim+2)
-  !   remap_pscalar(i) = i+ndim+2
-  !enddo
+#if NVAR>NDIM+2
+  allocate(remap_pscalar(1:nvar-(ndim+2)))
+  do i=1,nvar-(ndim+2)
+     remap_pscalar(i) = i+ndim+2
+  enddo
+#endif
 
   open(1,file=infile)
   rewind(1)
@@ -181,17 +183,24 @@ subroutine read_params
   if (myid==1 .and. nrestart .gt. 0) then
      call title(nrestart,nchar)
      info_file='output_'//TRIM(nchar)//'/info_'//TRIM(nchar)//'.txt'
-     inquire(file=info_file, exist=info_ok) 
+     inquire(file=info_file, exist=info_ok)
      do while(.not. info_ok .and. nrestart .gt. 1)
         nrestart = nrestart - 1
         call title(nrestart,nchar)
         info_file='output_'//TRIM(nchar)//'/info_'//TRIM(nchar)//'.txt'
-        inquire(file=info_file, exist=info_ok) 
-     enddo   
-     if (.not. info_ok) then
+        inquire(file=info_file, exist=info_ok)
+     enddo
+  endif
+
+#ifndef WITHOUTMPI
+  call MPI_BCAST(info_ok,1,MPI_LOGICAL,0,MPI_COMM_WORLD,ierr)
+#endif
+
+  if (nrestart .gt. 0 .and. .not. info_ok) then
+     if (myid==1) then
          write(*,*) "Error: Could not find restart file"
-         call clean_stop
      endif
+     call clean_stop
   endif
 
 #ifndef WITHOUTMPI
@@ -254,11 +263,11 @@ subroutine read_params
         if(myid==1)write(*,*)'Allocate some space for refinements !!!'
         nml_ok=.false.
      else
-        ngridmax=ngridtot/int(ncpu,kind=8)
+        ngridmax=int(ngridtot/int(ncpu,kind=8),kind=4)
      endif
   end if
   if(npartmax==0)then
-     npartmax=nparttot/int(ncpu,kind=8)
+     npartmax=int(nparttot/int(ncpu,kind=8),kind=4)
   endif
   if(myid>1)verbose=.false.
   if(sink.and.(.not.pic))then
@@ -273,12 +282,13 @@ subroutine read_params
 
   call read_hydro_params(nml_ok)
 #ifdef RT
-  call rt_read_hydro_params(nml_ok)
+  call read_rt_params(nml_ok)
 #endif
+#if NDIM==3
   if (sink)call read_sink_params
   if (clumpfind .or. sink)call read_clumpfind_params
+#endif
   if (movie)call set_movie_vars
-
 
   close(1)
 
@@ -292,8 +302,6 @@ subroutine read_params
      end if
   endif
 #endif
-  
-
 
   !-----------------
   ! Max size checks
@@ -306,7 +314,7 @@ subroutine read_params
      write(*,*) 'Error: nregion>MAXREGION'
      call clean_stop
   end if
-  
+
   !-----------------------------------
   ! Rearrange level dependent arrays
   !-----------------------------------
@@ -326,14 +334,14 @@ subroutine read_params
   do i=1,levelmin-1
      nexpand   (i)= 1
      nsubcycle (i)= 1
-     r_refine  (i)=-1.0
-     a_refine  (i)= 1.0
-     b_refine  (i)= 1.0
-     x_refine  (i)= 0.0
-     y_refine  (i)= 0.0
-     z_refine  (i)= 0.0
-     m_refine  (i)=-1.0
-     exp_refine(i)= 2.0
+     r_refine  (i)=-1
+     a_refine  (i)= 1
+     b_refine  (i)= 1
+     x_refine  (i)= 0
+     y_refine  (i)= 0
+     z_refine  (i)= 0
+     m_refine  (i)=-1
+     exp_refine(i)= 2
      initfile  (i)= ' '
   end do
 
@@ -341,7 +349,7 @@ subroutine read_params
      use_proper_time=.false.
      convert_birth_times=.false.
   endif
-     
+
   if(.not. nml_ok)then
      if(myid==1)write(*,*)'Too many errors in the namelist'
      if(myid==1)write(*,*)'Aborting...'
@@ -353,4 +361,3 @@ subroutine read_params
 #endif
 
 end subroutine read_params
-
