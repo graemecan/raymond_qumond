@@ -259,6 +259,7 @@
 contains
 
   subroutine load_grafic
+    use mond_commons, only: mond_omega_m
     ! Read data in the grafic format. The particle type is derived
     ! following conversion rules (see pm_commons:props2type)
     ! Grafic format for Ramses assumes the following unit for particles:
