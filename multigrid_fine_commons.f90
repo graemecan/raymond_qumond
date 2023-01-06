@@ -903,6 +903,7 @@ subroutine make_fine_bc_rhs(ilevel,icount)
    use amr_commons
    use pm_commons
    use poisson_commons
+   use mond_commons
    use constants, only: twopi
    implicit none
    integer, intent(in) :: ilevel,icount
