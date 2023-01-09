@@ -236,7 +236,7 @@
   else
 
      filetype_loc=filetype
-     if(.not. cosmo)filetype_loc='ascii'
+     !if(.not. cosmo)filetype_loc='ascii'
 
      select case (filetype_loc)
 
@@ -992,7 +992,7 @@ end subroutine init_part
 #define TIME_END(ce) call SYSTEM_CLOCK(COUNT=ce)
 #define TIME_SPENT(cs,ce,cr) REAL((ce-cs)/cr)
 subroutine load_gadget
-  ! This routine only creates DM particles
+  ! This routine reads ALL particles
   use amr_commons
   use pm_commons
   use gadgetreadfilemod
@@ -1008,6 +1008,7 @@ subroutine load_gadget
   integer::numfiles
   integer::ifile
   real,dimension(:,:),allocatable:: pos, vel
+  real,dimension(:),allocatable:: mass
   real(dp)::massparticles
   integer(kind=8)::allparticles
   integer(i8b),dimension(:),allocatable:: ids
@@ -1017,48 +1018,70 @@ subroutine load_gadget
   character(LEN=256)::filename
   real(dp),dimension(1:nvector,1:3)::xx_dp
   integer::clock_start,clock_end,clock_rate
-  real(dp)::gadgetvfact
+  real(dp)::gadgetvfact,gadgetposfact,gadgetoffset
+  real(dp) :: scale_l,scale_t,scale_d,scale_v,scale_nH,scale_T2
 
   ! Local particle count
   ipart=0
   call SYSTEM_CLOCK(COUNT_RATE=clock_rate)
+
+  call units(scale_l,scale_t,scale_d,scale_v,scale_nH,scale_T2)
 
   if(TRIM(initfile(levelmin)).NE.' ')then
      filename=TRIM(initfile(levelmin))
      ! read first header to get information
      call gadgetreadheader(filename, 0, gadgetheader, ok)
      if(.not.ok) call clean_stop
+     if (gadgetheader%npart(1) > 0) then
+         write(*,*) "WARNING: Gadget2 IC file contains gas particles. These will be treated as collisionless particles! This is probably not what you want to do..."
+     endif
      numfiles = gadgetheader%numfiles
-     gadgetvfact = sqrt(aexp) / gadgetheader%boxsize * aexp / 100d0
-#ifndef LONGINT
-     allparticles=int(gadgetheader%nparttotal(2),kind=8)
-#else
-     allparticles=int(gadgetheader%nparttotal(2),kind=8) &
-          & +int(gadgetheader%totalhighword(2),kind=8)*4294967296_i8b !2^32
-#endif
-     massparticles=1d0/dble(allparticles)
+     if (gadgetheader%boxsize == 0.0) then
+         gadgetvfact = (scale_t/scale_l)/1d5
+         gadgetposfact = 1d0
+         gadgetoffset = boxlen/2
+     else
+         gadgetvfact = sqrt(aexp) / gadgetheader%boxsize * aexp / 100d0
+         gadgetposfact = 1d0/gadgetheader%boxsize
+         gadgetoffset = 0d0 ! Correct?
+     endif
+!#ifndef LONGINT
+!     allparticles=int(gadgetheader%nparttotal(2),kind=8)
+!#else
+!     allparticles=int(gadgetheader%nparttotal(2),kind=8) &
+!          & +int(gadgetheader%totalhighword(2),kind=8)*4294967296_i8b !2^32
+!#endif
+!     massparticles=1d0/dble(allparticles)
      do ifile=0,numfiles-1
         call gadgetreadheader(filename, ifile, gadgetheader, ok)
-        nparticles = gadgetheader%npart(2)
+        ! We will read in ALL particles
+        nparticles = gadgetheader%npart(1)+gadgetheader%npart(2)+gadgetheader%npart(3) &
+                     +gadgetheader%npart(4)+gadgetheader%npart(5)+gadgetheader%npart(6)
         allocate(pos(3,nparticles))
         allocate(vel(3,nparticles))
         allocate(ids(nparticles))
+        allocate(mass(nparticles))
         TIME_START(clock_start)
-        call gadgetreadfile(filename,ifile,gadgetheader, pos, vel, ids)
+        call gadgetreadfile(filename,ifile,gadgetheader, pos, vel, ids, mass, nparticles)
         TIME_END(clock_end)
         if(debug) write(*,*) myid, ':Read ', nparticles, ' from gadget file ', ifile, ' in ', &
              TIME_SPENT(clock_start, clock_end, clock_rate)
         start = 1
         TIME_START(clock_start)
         do i=1,nparticles
-           xx_dp(1,1) = pos(1,i)/gadgetheader%boxsize
-           xx_dp(1,2) = pos(2,i)/gadgetheader%boxsize
-           xx_dp(1,3) = pos(3,i)/gadgetheader%boxsize
+           xx_dp(1,1) = pos(1,i)*gadgetposfact+gadgetoffset
+           xx_dp(1,2) = pos(2,i)*gadgetposfact+gadgetoffset
+           xx_dp(1,3) = pos(3,i)*gadgetposfact+gadgetoffset
 #ifndef WITHOUTMPI
            call cmp_cpumap(xx_dp,cc,1)
            if(cc(1)==myid)then
 #endif
               ipart=ipart+1
+              if(ipart>npartmax)then
+                   write(*,*)'Maximum number of particles incorrect'
+                   write(*,*)'npartmax should be greater than',ipart
+                   call clean_stop
+              endif
 #ifndef WITHOUTMPI
               if (ipart .ge. size(mp)) then
                  write(*,*) "For ", myid, ipart, " exceeds ", size(mp)
@@ -1069,9 +1092,15 @@ subroutine load_gadget
               vp(ipart,1)  =vel(1, i) * gadgetvfact
               vp(ipart,2)  =vel(2, i) * gadgetvfact
               vp(ipart,3)  =vel(3, i) * gadgetvfact
-              mp(ipart)    = massparticles
+              mp(ipart)    = mass(i)
               levelp(ipart)=levelmin
               idp(ipart)   =ids(i)
+
+              !if (ipart < 10) then
+              !    print *,"Particle data: ",xp(ipart,1:3),vp(ipart,1:3),mp(ipart),idp(ipart)
+              !else
+              !    call clean_stop
+              !endif
 
               ! Get the particle type
               typep(ipart)%family = FAM_DM
